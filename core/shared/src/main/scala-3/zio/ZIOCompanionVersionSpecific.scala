@@ -81,7 +81,7 @@ trait ZIOCompanionVersionSpecific {
     register: Unsafe ?=> (ZIO[R, E, A] => Unit) => Option[ZIO[R, E, A]],
     blockingOn: => FiberId = FiberId.None
   )(implicit trace: Trace): ZIO[R, E, A] =
-    Async(trace, { k => Unsafe.unsafe(register)(k).orNull }, () => blockingOn)
+    Async(trace, k => Unsafe.unsafe(register)(k).orNull, () => blockingOn)
 
   /**
    * Returns an effect that, when executed, will cautiously run the provided
@@ -107,7 +107,7 @@ trait ZIOCompanionVersionSpecific {
         case t: Throwable =>
           ZIO.withFiberRuntime[Any, Throwable, A] { (fiberState, _) =>
             if (!fiberState.isFatal(t)(Unsafe.unsafe))
-              throw ZIOError.Traced(Cause.fail(t, StackTrace.fromJava(fiberState.id, t.getStackTrace())))
+              throw ZIOError.Traced(Cause.fail(t))
             else
               throw t
           }
@@ -154,6 +154,29 @@ trait ZIOCompanionVersionSpecific {
    */
   def attemptBlockingIO[A](effect: Unsafe ?=> A)(implicit trace: Trace): IO[IOException, A] =
     attemptBlocking(effect).refineToOrDie[IOException]
+
+  /**
+   * Returns an effect that, when executed, will cautiously run the provided
+   * code, ignoring it success or failure.
+   */
+  def ignore(code: Unsafe ?=> Any)(implicit trace: Trace): UIO[Unit] =
+    ZIO.suspendSucceed {
+      try {
+        given Unsafe = Unsafe.unsafe
+
+        code
+
+        Exit.unit
+      } catch {
+        case t: Throwable =>
+          ZIO.withFiberRuntime[Any, Nothing, Unit] { (fiberState, _) =>
+            if (!fiberState.isFatal(t)(Unsafe.unsafe))
+              Exit.unit
+            else
+              throw t
+          }
+      }
+    }
 
   /**
    * Returns an effect that models success with the specified value.

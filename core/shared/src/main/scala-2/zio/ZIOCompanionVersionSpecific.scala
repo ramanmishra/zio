@@ -104,7 +104,7 @@ trait ZIOCompanionVersionSpecific {
         case t: Throwable =>
           ZIO.withFiberRuntime[Any, Throwable, A] { (fiberState, _) =>
             if (!fiberState.isFatal(t)(Unsafe.unsafe))
-              throw ZIOError.Traced(Cause.fail(t, StackTrace.fromJava(fiberState.id, t.getStackTrace())))
+              throw ZIOError.Traced(Cause.fail(t))
             else
               throw t
           }
@@ -151,6 +151,27 @@ trait ZIOCompanionVersionSpecific {
    */
   def attemptBlockingIO[A](effect: => A)(implicit trace: Trace): IO[IOException, A] =
     attemptBlocking(effect).refineToOrDie[IOException]
+
+  /**
+   * Returns an effect that, when executed, will cautiously run the provided
+   * code, ignoring it success or failure.
+   */
+  def ignore(code: => Any)(implicit trace: Trace): UIO[Unit] =
+    ZIO.suspendSucceed {
+      try {
+        code
+
+        Exit.unit
+      } catch {
+        case t: Throwable =>
+          ZIO.withFiberRuntime[Any, Nothing, Unit] { (fiberState, _) =>
+            if (!fiberState.isFatal(t)(Unsafe.unsafe))
+              Exit.unit
+            else
+              throw t
+          }
+      }
+    }
 
   /**
    * Returns an effect that models success with the specified value.

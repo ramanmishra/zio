@@ -3524,7 +3524,7 @@ object ZStreamSpec extends ZIOBaseSpec {
             for {
               ref      <- Ref.make(0)
               sink      = ZSink.take[Int](3).map(_.sum).mapZIO(n => ref.update(_ + n))
-              stream    = ZStream(1, 1, 2, 3, 5, 8).tapSink(sink)
+              stream    = ZStream(1, 1, 2, 3, 5, 8).rechunk(1).tapSink(sink)
               elements <- stream.runCollect
               done     <- ref.get
             } yield assertTrue(elements == Chunk(1, 1, 2, 3, 5, 8) && done == 4)
@@ -3977,7 +3977,19 @@ object ZStreamSpec extends ZIOBaseSpec {
                 )
               }
             )(equalTo(bytes))
-          }
+          },
+          test("Preserves errors") {
+            val stream = ZStream.fail(new Throwable("fail"))
+            val pipeline = ZPipeline.fromFunction[Scope, Throwable, Byte, Unit] { s =>
+              ZStream.fromZIO {
+                for {
+                  is <- s.toInputStream.debug("toInputStream")
+                  _  <- ZIO.attemptBlocking(is.read())
+                } yield ()
+              }
+            }
+            assertZIO(stream.via(pipeline).runCollect.exit)(fails(hasMessage(containsString("fail"))))
+          } @@ TestAspect.jvmOnly
         ),
         test("toIterator") {
           ZIO.scoped {

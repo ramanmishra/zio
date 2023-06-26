@@ -494,7 +494,7 @@ sealed trait ZIO[-R, +E, +A]
 
   /**
    * Returns an effect whose failure and success have been lifted into an
-   * `Either`.The resulting effect cannot fail, because the failure case has
+   * `Either`. The resulting effect cannot fail, because the failure case has
    * been exposed as part of the `Either` success case.
    *
    * This method is useful for recovering from `ZIO` effects that may fail.
@@ -1398,7 +1398,9 @@ sealed trait ZIO[-R, +E, +A]
    */
   private final def raceFibersWith[R1 <: R, ER, E2, B, C](right: ZIO[R1, ER, B])(
     leftWins: (Fiber.Runtime[E, A], Fiber.Runtime[ER, B]) => ZIO[R1, E2, C],
-    rightWins: (Fiber.Runtime[ER, B], Fiber.Runtime[E, A]) => ZIO[R1, E2, C]
+    rightWins: (Fiber.Runtime[ER, B], Fiber.Runtime[E, A]) => ZIO[R1, E2, C],
+    leftScope: FiberScope = null,
+    rightScope: FiberScope = null
   )(implicit trace: Trace): ZIO[R1, E2, C] =
     ZIO.withFiberRuntime[R1, E2, C] { (parentFiber, parentStatus) =>
       import java.util.concurrent.atomic.AtomicBoolean
@@ -1418,8 +1420,9 @@ sealed trait ZIO[-R, +E, +A]
 
       val raceIndicator = new AtomicBoolean(true)
 
-      val leftFiber  = ZIO.unsafe.makeChildFiber(trace, self, parentFiber, parentRuntimeFlags, null)(Unsafe.unsafe)
-      val rightFiber = ZIO.unsafe.makeChildFiber(trace, right, parentFiber, parentRuntimeFlags, null)(Unsafe.unsafe)
+      val leftFiber = ZIO.unsafe.makeChildFiber(trace, self, parentFiber, parentRuntimeFlags, leftScope)(Unsafe.unsafe)
+      val rightFiber =
+        ZIO.unsafe.makeChildFiber(trace, right, parentFiber, parentRuntimeFlags, rightScope)(Unsafe.unsafe)
 
       val startLeftFiber  = leftFiber.startSuspended()(Unsafe.unsafe)
       val startRightFiber = rightFiber.startSuspended()(Unsafe.unsafe)
@@ -3420,9 +3423,12 @@ object ZIO extends ZIOCompanionPlatformSpecific with ZIOCompanionVersionSpecific
   )(implicit bf: BuildFrom[Collection[A], B, Collection[B]], trace: Trace): ZIO[R, E, Collection[B]] =
     ZIO.suspendSucceed {
       exec match {
-        case ExecutionStrategy.Parallel     => ZIO.foreachPar(as)(f).withParallelismUnbounded
-        case ExecutionStrategy.ParallelN(n) => ZIO.foreachPar(as)(f).withParallelism(n)
-        case ExecutionStrategy.Sequential   => ZIO.foreach(as)(f)
+        case ExecutionStrategy.Parallel =>
+          ZIO.withParallelismUnboundedMask(restore => ZIO.foreachPar(as)(a => restore(f(a))))
+        case ExecutionStrategy.ParallelN(n) =>
+          ZIO.withParallelismMask(n)(restore => ZIO.foreachPar(as)(a => restore(f(a))))
+        case ExecutionStrategy.Sequential =>
+          ZIO.foreach(as)(f)
       }
     }
 
@@ -4981,11 +4987,39 @@ object ZIO extends ZIOCompanionPlatformSpecific with ZIOCompanionVersionSpecific
     ZIO.suspendSucceed(Parallelism.locally(Some(n))(zio))
 
   /**
+   * Runs the specified effect with the specified maximum number of fibers for
+   * parallel operators, but passes it a restore function that can be used to
+   * restore the inherited parallelism from whatever region the effect is
+   * composed into.
+   */
+  def withParallelismMask[R, E, A](n: => Int)(f: ZIO.ParallelismRestorer => ZIO[R, E, A])(implicit
+    trace: Trace
+  ): ZIO[R, E, A] =
+    Parallelism.getWith {
+      case Some(n0) => Parallelism.locally(Some(n))(f(ParallelismRestorer.MakeParallel(n0)))
+      case None     => Parallelism.locally(Some(n))(f(ParallelismRestorer.MakeParallelUnbounded))
+    }
+
+  /**
    * Runs the specified effect with an unbounded maximum number of fibers for
    * parallel operators.
    */
   def withParallelismUnbounded[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A] =
     ZIO.suspendSucceed(Parallelism.locally(None)(zio))
+
+  /**
+   * Runs the specified effect with an unbounded maximum number of fibers for
+   * parallel operators, but passes it a restore function that can be used to
+   * restore the inherited parallelism from whatever region the effect is
+   * composed into.
+   */
+  def withParallelismUnboundedMask[R, E, A](f: ZIO.ParallelismRestorer => ZIO[R, E, A])(implicit
+    trace: Trace
+  ): ZIO[R, E, A] =
+    Parallelism.getWith {
+      case Some(n) => Parallelism.locally(None)(f(ParallelismRestorer.MakeParallel(n)))
+      case None    => Parallelism.locally(None)(f(ParallelismRestorer.MakeParallelUnbounded))
+    }
 
   /**
    * Executes the specified workflow with the specified implementation of the
@@ -5046,6 +5080,10 @@ object ZIO extends ZIOCompanionPlatformSpecific with ZIOCompanionVersionSpecific
     Stateful(trace, onState)
 
   private val _IdentityFn: Any => Any = (a: Any) => a
+
+  private val _SecondFn: (Any, Any) => Any = (_: Any, b: Any) => b
+
+  private[zio] def secondFn[A]: (Any, A) => A = _SecondFn.asInstanceOf[(Any, A) => A]
 
   private[zio] def identityFn[A]: A => A = _IdentityFn.asInstanceOf[A => A]
 
@@ -5179,7 +5217,26 @@ object ZIO extends ZIOCompanionPlatformSpecific with ZIOCompanionVersionSpecific
     def apply[B1 >: B](f: A => B1)(duration: => Duration)(implicit
       trace: Trace
     ): ZIO[R, E, B1] =
-      (self map f) raceFirstAwait (ZIO.sleep(duration).interruptible as b())
+      ZIO.fiberIdWith { parentFiberId =>
+        self.raceFibersWith[R, Nothing, E, Unit, B1](ZIO.sleep(duration).interruptible)(
+          (winner, loser) =>
+            winner.await.flatMap {
+              case Exit.Success(a) =>
+                winner.inheritAll *> loser.interruptAs(parentFiberId).as(f(a))
+              case Exit.Failure(cause) =>
+                loser.interruptAs(parentFiberId) *> ZIO.refailCause(cause)
+            },
+          (winner, loser) =>
+            winner.await.flatMap {
+              case Exit.Success(_) =>
+                winner.inheritAll *> loser.interruptAs(parentFiberId).as(b())
+              case Exit.Failure(cause) =>
+                loser.interruptAs(parentFiberId) *> ZIO.refailCause(cause)
+            },
+          null,
+          FiberScope.global
+        )
+      }
   }
 
   final class Acquire[-R, +E, +A](private val acquire: () => ZIO[R, E, A]) extends AnyVal {
@@ -5813,6 +5870,21 @@ object ZIO extends ZIOCompanionPlatformSpecific with ZIOCompanionVersionSpecific
         ZIO.UpdateRuntimeFlagsWithin.Uninterruptible(trace, effect)
 
       def isParentRegionInterruptible: Boolean = false
+    }
+  }
+
+  sealed trait ParallelismRestorer {
+    def apply[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A]
+  }
+
+  object ParallelismRestorer {
+    final case class MakeParallel(n: Int) extends ParallelismRestorer {
+      def apply[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A] =
+        zio.withParallelism(n)
+    }
+    case object MakeParallelUnbounded extends ParallelismRestorer {
+      def apply[R, E, A](zio: ZIO[R, E, A])(implicit trace: Trace): ZIO[R, E, A] =
+        zio.withParallelismUnbounded
     }
   }
 

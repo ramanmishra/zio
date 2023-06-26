@@ -2168,7 +2168,7 @@ final class ZStream[-R, +E, +A] private (val channel: ZChannel[R, Any, Any, Any,
    */
   def partition(p: A => Boolean, buffer: => Int = 16)(implicit
     trace: Trace
-  ): ZIO[R with Scope, E, (ZStream[Any, E, A], ZStream[Any, E, A])] =
+  ): ZIO[R with Scope, Nothing, (ZStream[Any, E, A], ZStream[Any, E, A])] =
     self.partitionEither(a => if (p(a)) ZIO.succeed(Left(a)) else ZIO.succeed(Right(a)), buffer)
 
   /**
@@ -2178,7 +2178,7 @@ final class ZStream[-R, +E, +A] private (val channel: ZChannel[R, Any, Any, Any,
   def partitionEither[R1 <: R, E1 >: E, A2, A3](
     p: A => ZIO[R1, E1, Either[A2, A3]],
     buffer: => Int = 16
-  )(implicit trace: Trace): ZIO[R1 with Scope, E1, (ZStream[Any, E1, A2], ZStream[Any, E1, A3])] =
+  )(implicit trace: Trace): ZIO[R1 with Scope, Nothing, (ZStream[Any, E1, A2], ZStream[Any, E1, A3])] =
     self
       .mapZIO(p)
       .distributedWith(
@@ -3127,14 +3127,29 @@ final class ZStream[-R, +E, +A] private (val channel: ZChannel[R, Any, Any, Any,
       lazy val loop: ZChannel[R1, E, Chunk[A], Any, E1, Chunk[A], Any] =
         ZChannel.readWithCause(
           chunk =>
-            ZChannel.fromZIO(queue.offer(Take.chunk(chunk))) *>
-              ZChannel.write(chunk) *>
-              loop,
-          cause => ZChannel.fromZIO(queue.offer(Take.failCause(cause))),
-          _ => ZChannel.fromZIO(queue.offer(Take.end))
+            ZChannel
+              .fromZIO(queue.offer(Take.chunk(chunk)))
+              .foldCauseChannel(
+                _ => ZChannel.write(chunk) *> ZChannel.identity,
+                _ => ZChannel.write(chunk) *> loop
+              ),
+          cause =>
+            ZChannel
+              .fromZIO(queue.offer(Take.failCause(cause)))
+              .foldCauseChannel(
+                _ => ZChannel.refailCause(cause),
+                _ => ZChannel.refailCause(cause)
+              ),
+          _ =>
+            ZChannel
+              .fromZIO(queue.offer(Take.end))
+              .foldCauseChannel(
+                _ => ZChannel.unit,
+                _ => ZChannel.unit
+              )
         )
       new ZStream((self.channel >>> loop).ensuring(queue.offer(Take.end).forkDaemon *> promise.await))
-        .merge(ZStream.execute(right.run(sink).ensuring(promise.succeed(()))), HaltStrategy.Both)
+        .merge(ZStream.execute(right.run(sink).ensuring(queue.shutdown *> promise.succeed(()))), HaltStrategy.Both)
     }
 
   /**

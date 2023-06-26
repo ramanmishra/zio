@@ -19,7 +19,6 @@ package zio.test
 import zio.Clock.ClockLive
 import zio._
 import zio.test.ReporterEventRenderer.ConsoleEventRenderer
-import zio.test.results.{ExecutionEventJsonPrinter, ResultFileOpsJson, ResultSerializer}
 
 import java.util.concurrent.TimeUnit
 
@@ -28,10 +27,7 @@ import java.util.concurrent.TimeUnit
  * require an environment `R` and may fail with an error `E`. Test runners
  * require a test executor, a runtime configuration, and a reporter.
  */
-final case class TestRunner[R, E](
-  executor: TestExecutor[R, E],
-  bootstrap: ULayer[TestOutput with ExecutionEventSink] = TestRunner.defaultBootstrap
-) { self =>
+final case class TestRunner[R, E](executor: TestExecutor[R, E]) { self =>
 
   val runtime: Runtime[Any] = Runtime.default
 
@@ -62,7 +58,7 @@ final case class TestRunner[R, E](
        */
       def run(spec: Spec[R, E])(implicit trace: Trace, unsafe: Unsafe): Unit =
         runtime.unsafe
-          .run(self.run("Test Task name unavailable in this context.", spec).provideLayer(bootstrap))
+          .run(self.run("Test Task name unavailable in this context.", spec))
           .getOrThrowFiberFailure()
 
       /**
@@ -70,7 +66,7 @@ final case class TestRunner[R, E](
        */
       def runAsync(spec: Spec[R, E])(k: => Unit)(implicit trace: Trace, unsafe: Unsafe): Unit = {
         val fiber =
-          runtime.unsafe.fork(self.run("Test Task name unavailable in this context.", spec).provideLayer(bootstrap))
+          runtime.unsafe.fork(self.run("Test Task name unavailable in this context.", spec))
         fiber.unsafe.addObserver {
           case Exit.Success(_) => k
           case Exit.Failure(c) => throw FiberFailure(c)
@@ -81,28 +77,6 @@ final case class TestRunner[R, E](
        * An unsafe, synchronous run of the specified spec.
        */
       def runSync(spec: Spec[R, E])(implicit trace: Trace, unsafe: Unsafe): Exit[Nothing, Unit] =
-        runtime.unsafe.run(self.run("Test Task name unavailable in this context.", spec).unit.provideLayer(bootstrap))
+        runtime.unsafe.run(self.run("Test Task name unavailable in this context.", spec).unit)
     }
-
-  private[test] def buildRuntime(implicit
-    trace: Trace
-  ): ZIO[Scope, Nothing, Runtime[TestOutput with ExecutionEventSink]] =
-    bootstrap.toRuntime
-}
-
-object TestRunner {
-  lazy val defaultBootstrap = {
-    implicit val emptyTracer = Trace.empty
-
-    ZLayer.make[TestOutput with ExecutionEventSink](
-      ResultSerializer.live,
-      ResultFileOpsJson.live,
-      ExecutionEventJsonPrinter.live,
-      ExecutionEventConsolePrinter.live(ReporterEventRenderer.ConsoleEventRenderer),
-      ExecutionEventPrinter.live,
-      TestLogger.fromConsole(Console.ConsoleLive),
-      TestOutput.live,
-      ExecutionEventSink.live
-    )
-  }
 }

@@ -23,6 +23,7 @@ import zio.stacktracer.TracingImplicits.disableAutoTrace
 
 import java.nio.charset.{Charset, StandardCharsets}
 import java.util.concurrent.atomic.AtomicReference
+import scala.annotation.tailrec
 import scala.reflect.ClassTag
 
 final class ZSink[-R, +E, -In, +L, +Z] private (val channel: ZChannel[R, ZNothing, Chunk[In], Any, E, Chunk[L], Z])
@@ -392,6 +393,38 @@ final class ZSink[-R, +E, -In, +L, +Z] private (val channel: ZChannel[R, ZNothin
     r: => ZEnvironment[R]
   )(implicit trace: Trace): ZSink[Any, E, In, L, Z] =
     new ZSink(channel.provideEnvironment(r))
+
+  /**
+   * Transforms the environment being provided to the sink with the specified
+   * function.
+   */
+  def provideSomeEnvironment[R0](
+    f: ZEnvironment[R0] => ZEnvironment[R]
+  )(implicit trace: Trace): ZSink[R0, E, In, L, Z] =
+    new ZSink(channel.provideSomeEnvironment(f))
+
+  /**
+   * Provides a layer to the sink, which translates it to another level.
+   */
+  def provideLayer[E1 >: E, R0](
+    layer: => ZLayer[R0, E1, R]
+  )(implicit trace: Trace): ZSink[R0, E1, In, L, Z] =
+    new ZSink(channel.provideLayer(layer))
+
+  /**
+   * Splits the environment into two parts, providing one part using the
+   * specified layer and leaving the remainder `R0`.
+   *
+   * {{{
+   * val loggingLayer: ZLayer[Any, Nothing, Logging] = ???
+   *
+   * val sink: ZSink[Logging with Database, Nothing, Unit] = ???
+   *
+   * val sink2 = sink.provideSomeLayer[Database](loggingLayer)
+   * }}}
+   */
+  def provideSomeLayer[R0]: ZSink.ProvideSomeLayer[R0, R, E, In, L, Z] =
+    new ZSink.ProvideSomeLayer[R0, R, E, In, L, Z](self.channel)
 
   /**
    * Runs both sinks in parallel on the input, , returning the result or the
@@ -889,19 +922,15 @@ object ZSink extends ZSinkPlatformSpecificConstructors {
     z: => S
   )(contFn: S => Boolean)(f: (S, In) => S)(implicit trace: Trace): ZSink[Any, Nothing, In, In, S] =
     ZSink.suspend {
-      def foldChunkSplit(z: S, chunk: Chunk[In])(
-        contFn: S => Boolean
-      )(f: (S, In) => S): (S, Chunk[In]) = {
+      def foldChunkSplit(z: S, chunk: Chunk[In]): (S, Chunk[In]) = {
+        @tailrec
         def fold(s: S, chunk: Chunk[In], idx: Int, len: Int): (S, Chunk[In]) =
-          if (idx == len) {
-            (s, Chunk.empty)
-          } else {
+          if (idx == len) (s, Chunk.empty)
+          else {
             val s1 = f(s, chunk(idx))
-            if (contFn(s1)) {
-              fold(s1, chunk, idx + 1, len)
-            } else {
-              (s1, chunk.drop(idx + 1))
-            }
+
+            if (contFn(s1)) fold(s1, chunk, idx + 1, len)
+            else (s1, chunk.drop(idx + 1))
           }
 
         fold(z, chunk, 0, chunk.length)
@@ -912,13 +941,13 @@ object ZSink extends ZSinkPlatformSpecificConstructors {
         else
           ZChannel.readWithCause(
             (in: Chunk[In]) => {
-              val (nextS, leftovers) = foldChunkSplit(s, in)(contFn)(f)
+              val (nextS, leftovers) = foldChunkSplit(s, in)
 
               if (leftovers.nonEmpty) ZChannel.write(leftovers).as(nextS)
               else reader(nextS)
             },
             (err: Cause[ZNothing]) => ZChannel.refailCause(err),
-            (x: Any) => ZChannel.succeedNow(s)
+            (_: Any) => ZChannel.succeedNow(s)
           )
 
       new ZSink(reader(z))
@@ -1754,5 +1783,22 @@ object ZSink extends ZSinkPlatformSpecificConstructors {
       trace: Trace
     ): ZSink[R, E, In, L, Z] =
       new ZSink(ZChannel.unwrapScoped[R](scoped.map(_.channel)))
+  }
+
+  final class ProvideSomeLayer[R0, -R, +E, -In, +L, +Z](
+    private val channel: ZChannel[R, ZNothing, Chunk[In], Any, E, Chunk[L], Z]
+  ) extends AnyVal {
+    def apply[E1 >: E, R1](
+      layer: => ZLayer[R0, E1, R1]
+    )(implicit
+      ev: R0 with R1 <:< R,
+      tagged: EnvironmentTag[R1],
+      trace: Trace
+    ): ZSink[R0, E1, In, L, Z] =
+      new ZSink(
+        channel
+          .asInstanceOf[ZChannel[R0 with R1, ZNothing, Chunk[In], Any, E, Chunk[L], Z]]
+          .provideLayer(ZLayer.environment[R0] ++ layer)
+      )
   }
 }

@@ -142,7 +142,8 @@ module.exports = {
         "reference/service-pattern/service-pattern",
         "reference/service-pattern/defining-polymorphic-services-in-zio",
         "reference/service-pattern/generating-accessor-methods-using-macros",
-        "reference/service-pattern/the-three-laws-of-zio-environment"
+        "reference/service-pattern/the-three-laws-of-zio-environment",
+        "reference/service-pattern/reloadable-services"
       ]
     },
     {
@@ -403,6 +404,7 @@ module.exports = {
         "reference/test/installation",
         "reference/test/writing-our-first-test",
         "reference/test/running-tests",
+        "reference/test/junit-integration",
         {
           type: "category",
           label: "Assertions",
@@ -505,6 +507,7 @@ module.exports = {
         "guides/tutorials/debug-a-zio-application",
         "guides/tutorials/build-a-restful-webservice",
         "guides/tutorials/build-a-graphql-webservice",
+        "guides/tutorials/gracefully-shutdown-zio-application",
       ]
     },
     {
@@ -554,6 +557,7 @@ module.exports = {
         "ecosystem/community/munit-zio",
         "ecosystem/community/quill",
         "ecosystem/community/rezilience",
+        "ecosystem/community/scala-k8s",
         "ecosystem/community/tamer",
         "ecosystem/community/tofu-zio2-logging",
         "ecosystem/community/tranzactio",
@@ -566,6 +570,7 @@ module.exports = {
         "ecosystem/community/zio-pulsar",
         "ecosystem/community/zio-saga",
         "ecosystem/community/zio-slick-interop",
+        "ecosystem/community/zio-temporal",
         "ecosystem/community/zio-test-akka-http",
       ],
     },

@@ -19,6 +19,7 @@ package zio.stream
 import zio._
 import zio.internal.SingleThreadedRingBuffer
 import zio.stacktracer.TracingImplicits.disableAutoTrace
+import zio.stream.encoding.EncodingException
 import zio.stream.internal.CharacterSet.{BOM, CharsetUtf32BE, CharsetUtf32LE}
 import zio.stream.internal.SingleProducerAsyncInput
 
@@ -26,6 +27,7 @@ import java.nio.{Buffer, ByteBuffer, CharBuffer}
 import java.nio.charset.{
   CharacterCodingException,
   Charset,
+  CharsetDecoder,
   CoderResult,
   MalformedInputException,
   StandardCharsets,
@@ -85,8 +87,8 @@ final class ZPipeline[-Env, +Err, -In, +Out] private (
     new ZPipeline(self.channel.pipeToOrFail(that.channel))
 
   /**
-   * Compose this transducer with a sink, resulting in a sink that processes
-   * elements by piping them through this transducer and piping the results into
+   * Compose this pipeline with a sink, resulting in a sink that processes
+   * elements by piping them through this pipeline and piping the results into
    * the sink.
    */
   def >>>[Env1 <: Env, Err1 >: Err, Leftover, Out2](that: => ZSink[Env1, Err1, Out, Leftover, Out2])(implicit
@@ -271,6 +273,13 @@ final class ZPipeline[-Env, +Err, -In, +Out] private (
     that: => ZPipeline[Env1, Err1, In2, In]
   )(implicit trace: Trace): ZPipeline[Env1, Err1, In2, Out] =
     self <<< that
+
+  /**
+   * Returns a new pipeline which is the same as this one but applies the given
+   * function to the pipeline's input.
+   */
+  def contramap[In2](f: In2 => In)(implicit trace: Trace): ZPipeline[Env, Err, In2, Out] =
+    ZPipeline.fromChannel(channel.contramapIn(_.map(f)))
 
   /**
    * Converts this pipeline to a pipeline that executes its effects but emits no
@@ -910,8 +919,18 @@ object ZPipeline extends ZPipelinePlatformSpecificConstructors {
     charset: => Charset,
     bufSize: => Int = 4096
   )(implicit trace: Trace): ZPipeline[Any, CharacterCodingException, Byte, Char] =
+    decodeCharsWithDecoder(charset.newDecoder(), bufSize)
+
+  /**
+   * Creates a pipeline that decodes a stream of bytes into a stream of
+   * characters using the given charset decoder.
+   */
+  def decodeCharsWithDecoder(
+    charsetDecoder: => CharsetDecoder,
+    bufSize: => Int = 4096
+  )(implicit trace: Trace): ZPipeline[Any, CharacterCodingException, Byte, Char] =
     ZPipeline.suspend {
-      val decoder    = charset.newDecoder()
+      val decoder    = charsetDecoder
       val byteBuffer = ByteBuffer.allocate(bufSize)
       val charBuffer = CharBuffer.allocate((bufSize.toFloat * decoder.averageCharsPerByte).round)
 
@@ -1488,6 +1507,104 @@ object ZPipeline extends ZPipelinePlatformSpecificConstructors {
     )
 
   /**
+   * Decode each pair of hex digit input characters (both lower or upper case
+   * letters are allowed) as one output byte.
+   */
+  def hexDecode(implicit trace: Trace): ZPipeline[Any, EncodingException, Char, Byte] = {
+    def digitValue(c: Char): Int = c match {
+      case d if d >= '0' && d <= '9' => d - '0'
+      case l if l >= 'a' && l <= 'f' => 10 + l - 'a'
+      case u if u >= 'A' && u <= 'F' => 10 + u - 'A'
+      case _                         => -1
+    }
+    def decodeChannel(
+      spare: Chunk[Char]
+    ): ZChannel[Any, Any, Chunk[Char], Any, EncodingException, Chunk[Byte], Unit] = {
+      def in(in: Chunk[Char]): ZChannel[Any, Any, Chunk[Char], Any, EncodingException, Chunk[Byte], Unit] = {
+        val toProcess = spare ++ in
+        if (toProcess.isEmpty) {
+          ZChannel.unit
+        } else {
+          val l = toProcess.size
+          val (cs, newSpare) = if (l % 2 == 0) {
+            (toProcess, Chunk.empty[Char])
+          } else {
+            toProcess.splitAt(l - 1)
+          }
+          val temp: ChunkBuilder[Byte] = ChunkBuilder.make[Byte](l / 2)
+          var bad: Option[Char]        = None
+          for (i <- 0 until cs.size by 2) {
+            if (bad.isEmpty) {
+              val ch = cs(i)
+              val h  = digitValue(ch)
+              if (h < 0) {
+                bad = Some(ch)
+              } else {
+                val cl = cs(i + 1)
+                val l  = digitValue(cl)
+                if (l < 0) {
+                  bad = Some(cl)
+                } else {
+                  val v = (h << 4) | l
+                  val b = v.toByte
+                  temp += b
+                }
+              }
+            }
+          }
+          bad match {
+            case None    => ZChannel.write(temp.result()) *> decodeChannel(newSpare)
+            case Some(e) => ZChannel.fail(EncodingException(s"Not a valid hex digit: '$e'"))
+          }
+        }
+      }
+      def err(z: Any): ZChannel[Any, Any, Chunk[Char], Any, EncodingException, Chunk[Byte], Unit] =
+        ZChannel.fail(EncodingException("Input stream should be infallible"))
+
+      def done(u: Any): ZChannel[Any, Any, Chunk[Char], Any, EncodingException, Chunk[Byte], Unit] =
+        if (spare.isEmpty) {
+          ZChannel.succeed(())
+        } else {
+          ZChannel.fail(EncodingException("Extra input at end after last fully encoded byte"))
+        }
+
+      ZChannel.readWith[Any, Any, zio.Chunk[Char], Any, EncodingException, zio.Chunk[Byte], Unit](
+        in,
+        err,
+        done
+      )
+    }
+
+    ZPipeline.fromChannel(decodeChannel(Chunk.empty[Char]))
+  }
+
+  /**
+   * Encode each input byte as two output bytes as the hex representation of the
+   * input byte.
+   */
+  def hexEncode(implicit trace: Trace): ZPipeline[Any, Nothing, Byte, Char] = {
+    val DIGITS: Array[Char] = Array(
+      '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+    )
+    ZPipeline.fromPush[Any, Nothing, Byte, Char](
+      ZIO.succeed((inChunkOpt: Option[Chunk[Byte]]) =>
+        inChunkOpt match {
+          case None => ZIO.succeed(Chunk.empty[Char])
+          case Some(bs) =>
+            ZIO.succeed {
+              val out = ChunkBuilder.make[Char](bs.size * 2)
+              for (b <- bs) {
+                out += DIGITS((b >>> 4) & 0x0f)
+                out += DIGITS((b >>> 0) & 0x0f)
+              }
+              out.result()
+            }
+        }
+      )
+    )
+  }
+
+  /**
    * The identity pipeline, which does not modify streams in any way.
    */
   def identity[In](implicit trace: Trace): ZPipeline[Any, Nothing, In, In] =
@@ -1725,6 +1842,18 @@ object ZPipeline extends ZPipelinePlatformSpecificConstructors {
 
     val target = scala.math.max(n, 1)
     new ZPipeline(ZChannel.suspend(process(new ZStream.Rechunker(target), target)))
+  }
+
+  /**
+   * Creates a pipeline that randomly samples elements according to the
+   * specified percentage.
+   */
+  def sample[In](p: => Double)(implicit trace: Trace): ZPipeline[Any, Nothing, In, In] = {
+    val clamped = if (p.isNaN || p < 0.0d) 0.0d else if (p > 1.0d) 1.0d else p
+    val channel = ZChannel
+      .identity[Nothing, Chunk[In], Any]
+      .mapOutZIO(_.filterZIO(_ => Random.nextDoubleBetween(0.0d, 1.0d).map(_ < clamped)))
+    ZPipeline.fromChannel(channel)
   }
 
   /**

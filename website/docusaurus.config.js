@@ -17,6 +17,7 @@ const config = {
   organizationName: 'zio',
   projectName: 'zio',
   themeConfig: {
+    image: 'https://zio.dev/img/zio.png',
     algolia: {
       // The application ID provided by Algolia
       appId: 'IAX8GRSWEQ',
@@ -122,7 +123,7 @@ const config = {
             },
             {
               label: 'Contributing to The ZIO Documentation',
-              href: '/contributing-to-the-documentation'
+              href: '/contributing-to-documentation'
             },
             {
               label: 'Coding Guidelines',

@@ -37,7 +37,7 @@ addCommandAlias(
 )
 addCommandAlias(
   "testNative",
-  ";coreTestsNative/test;stacktracerNative/test;streamsTestsNative/test;testTestsNative/test;examplesNative/Test/compile;macrosTestsNative/test;concurrentNative/test" // `test` currently executes only compilation, see `nativeSettings` in `BuildHelper`
+  ";coreTestsNative/test;stacktracerNative/test;streamsTestsNative/test;testTestsNative/test;examplesNative/Test/compile;macrosTestsNative/test;concurrentNative/test"
 )
 addCommandAlias(
   "testJVM",
@@ -207,7 +207,7 @@ lazy val core = crossProject(JSPlatform, JVMPlatform, NativePlatform)
   .settings(stdSettings("zio"))
   .settings(crossProjectSettings)
   .settings(buildInfoSettings("zio"))
-  .settings(libraryDependencies += "dev.zio" %%% "izumi-reflect" % "2.3.1")
+  .settings(libraryDependencies += "dev.zio" %%% "izumi-reflect" % "2.3.8")
   .enablePlugins(BuildInfoPlugin)
   .settings(macroDefinitionSettings)
   .settings(
@@ -899,10 +899,12 @@ lazy val docs = project.module
     streams.jvm,
     concurrent.jvm,
     tests.jvm,
+    testJunitRunner,
     testMagnolia.jvm,
     testRefined.jvm,
     testScalaCheck.jvm,
-    core.js
+    core.js,
+    macros.jvm
   )
   .enablePlugins(MdocPlugin, DocusaurusPlugin, ScalaUnidocPlugin)
   .aggregate(docs_make_zio_app_configurable)

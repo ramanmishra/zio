@@ -21,7 +21,6 @@ import zio.stacktracer.TracingImplicits.disableAutoTrace
 import zio.stream.{ZChannel, ZSink, ZStream}
 import zio.test.ReporterEventRenderer.ConsoleEventRenderer
 import zio.test.Spec.LabeledCase
-import zio.test.results.{ExecutionEventJsonPrinter, ResultFileOpsJson, ResultSerializer}
 
 import scala.language.implicitConversions
 
@@ -787,15 +786,138 @@ package object test extends CompileVariants {
   def checkN(n: Int): CheckVariants.CheckN =
     new CheckVariants.CheckN(n)
 
-  private[test] def sinkLayer(console: Console, eventRenderer: ReporterEventRenderer)(implicit
+  /**
+   * Checks in parallel the test passes for "sufficient" numbers of samples from
+   * the given random variable.
+   */
+  def checkPar[R <: ZAny, A, In](rv: Gen[R, A], parallelism: Int)(test: A => In)(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
     trace: Trace
-  ): ZLayer[Any, Nothing, ExecutionEventSink] =
-    TestLogger.fromConsole(console) >>>
-      ((ResultFileOpsJson.live >+> ResultSerializer.live >>> ExecutionEventJsonPrinter.live) ++ ExecutionEventConsolePrinter
-        .live(eventRenderer)) >>>
-      ExecutionEventPrinter.live >>>
-      TestOutput.live >>>
-      ExecutionEventSink.live
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    TestConfig.samples.flatMap(n =>
+      checkStreamPar(rv.sample.forever.take(n.toLong), parallelism)(a => checkConstructor(test(a)))
+    )
+
+  /**
+   * A version of `checkPar` that accepts two random variables.
+   */
+  def checkPar[R <: ZAny, A, B, In](rv1: Gen[R, A], rv2: Gen[R, B], parallelism: Int)(test: (A, B) => In)(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2, parallelism)(test.tupled)
+
+  /**
+   * A version of `checkPar` that accepts three random variables.
+   */
+  def checkPar[R <: ZAny, A, B, C, In](rv1: Gen[R, A], rv2: Gen[R, B], rv3: Gen[R, C], parallelism: Int)(
+    test: (A, B, C) => In
+  )(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2 <*> rv3, parallelism)(test.tupled)
+
+  /**
+   * A version of `checkPar` that accepts four random variables.
+   */
+  def checkPar[R <: ZAny, A, B, C, D, In](
+    rv1: Gen[R, A],
+    rv2: Gen[R, B],
+    rv3: Gen[R, C],
+    rv4: Gen[R, D],
+    parallelism: Int
+  )(test: (A, B, C, D) => In)(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2 <*> rv3 <*> rv4, parallelism)(test.tupled)
+
+  /**
+   * A version of `checkPar` that accepts five random variables.
+   */
+  def checkPar[R <: ZAny, A, B, C, D, F, In](
+    rv1: Gen[R, A],
+    rv2: Gen[R, B],
+    rv3: Gen[R, C],
+    rv4: Gen[R, D],
+    rv5: Gen[R, F],
+    parallelism: Int
+  )(
+    test: (A, B, C, D, F) => In
+  )(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5, parallelism)(test.tupled)
+
+  /**
+   * A version of `checkPar` that accepts six random variables.
+   */
+  def checkPar[R <: ZAny, A, B, C, D, F, G, In](
+    rv1: Gen[R, A],
+    rv2: Gen[R, B],
+    rv3: Gen[R, C],
+    rv4: Gen[R, D],
+    rv5: Gen[R, F],
+    rv6: Gen[R, G],
+    parallelism: Int
+  )(
+    test: (A, B, C, D, F, G) => In
+  )(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5 <*> rv6, parallelism)(test.tupled)
+
+  /**
+   * A version of `checkPar` that accepts seven random variables.
+   */
+  def checkPar[R <: ZAny, A, B, C, D, F, G, H, In](
+    rv1: Gen[R, A],
+    rv2: Gen[R, B],
+    rv3: Gen[R, C],
+    rv4: Gen[R, D],
+    rv5: Gen[R, F],
+    rv6: Gen[R, G],
+    rv7: Gen[R, H],
+    parallelism: Int
+  )(
+    test: (A, B, C, D, F, G, H) => In
+  )(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5 <*> rv6 <*> rv7, parallelism)(test.tupled)
+
+  /**
+   * A version of `checkPar` that accepts eight random variables.
+   */
+  def checkPar[R <: ZAny, A, B, C, D, F, G, H, I, In](
+    rv1: Gen[R, A],
+    rv2: Gen[R, B],
+    rv3: Gen[R, C],
+    rv4: Gen[R, D],
+    rv5: Gen[R, F],
+    rv6: Gen[R, G],
+    rv7: Gen[R, H],
+    rv8: Gen[R, I],
+    parallelism: Int
+  )(
+    test: (A, B, C, D, F, G, H, I) => In
+  )(implicit
+    checkConstructor: CheckConstructor[R, In],
+    sourceLocation: SourceLocation,
+    trace: Trace
+  ): ZIO[checkConstructor.OutEnvironment, checkConstructor.OutError, TestResult] =
+    checkPar(rv1 <*> rv2 <*> rv3 <*> rv4 <*> rv5 <*> rv6 <*> rv7 <*> rv8, parallelism)(test.tupled)
 
   /**
    * A `Runner` that provides a default testable environment.
@@ -806,7 +928,7 @@ package object test extends CompileVariants {
       TestExecutor.default(
         testEnvironment,
         Scope.default ++ testEnvironment,
-        sinkLayer(Console.ConsoleLive, ConsoleEventRenderer),
+        ExecutionEventSink.live(Console.ConsoleLive, ConsoleEventRenderer),
         ZTestEventHandler.silent // The default test runner handles its own events, writing their output to the provided sink.
       )
     )
